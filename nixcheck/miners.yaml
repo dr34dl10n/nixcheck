@@ -1,0 +1,22 @@
+# Default crypto miner process names for nixcheck.
+# Customize this list or provide your own file via --miner-list.
+
+miners:
+  - xmrig
+  - minerd
+  - cgminer
+  - cpuminer
+  - ethminer
+  - bfgminer
+  - sgminer
+  - ccminer
+  - claymore
+  - phoenixminer
+  - t-rex
+  - nanominer
+  - lolminer
+  - nbminer
+  - teamredminer
+  - wildrig-multi
+  - xmr-stak
+  - xmrig-proxy
