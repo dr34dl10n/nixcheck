@@ -1,11 +1,12 @@
 # nixcheck
 
-**Un check-up santé pour serveurs Linux — rapide, déterministe, et pensé pour les humains comme pour les machines.**
+**Un check-up santé pour serveurs Linux — rapide, déterministe, avec analyse IA optionnelle.**
 
 ```bash
 nixcheck                  # rapport interactif dans le terminal
 nixcheck --json           # sortie JSON pour l'automatisation
 nixcheck --fast --quiet   # mode rapide, résumé en une ligne
+nixcheck --fast --ai      # checks + diagnostic IA
 ```
 
 ## Pourquoi nixcheck ?
@@ -16,9 +17,37 @@ nixcheck fait tout ça en une commande : services, conteneurs, ressources, logs,
 
 ## Origine du projet
 
-nixcheck a été conçu autour de [LangGraph](https://github.com/langchain-ai/langgraph) : l'idée initiale était de laisser une IA conduire les checks et analyser les résultats. L'architecture en graphe est restée — c'est un modèle élégant pour orchestrer des étapes de diagnostic — mais **les checks sont maintenant 100 % déterministes**. Pas d'appel LLM, pas de clé d'API, pas d'incertitude.
+nixcheck a été conçu autour de [LangGraph](https://github.com/langchain-ai/langgraph) : l'idée initiale était de laisser une IA conduire les checks et analyser les résultats. L'architecture en graphe est restée — c'est un modèle élégant pour orchestrer des étapes de diagnostic — mais **les checks sont 100 % déterministes**. Pas d'appel LLM pendant la collecte, pas d'incertitude sur les données.
 
-Le JSON en sortie est pensé pour être consommé facilement par un agent IA : chaque issue a un type, une sévérité, des détails, et une recommandation de remédiation. Si vous voulez brancher une IA dessus, l'output est déjà structuré pour.
+Par-dessus ces checks déterministes, nixcheck propose une **couche d'analyse IA optionnelle** : le state complet est sérialisé et envoyé à un LLM (compatible OpenAI) qui produit un diagnostic en langage naturel avec des recommandations priorisées. C'est activé uniquement si vous le demandez avec `--ai` — sans ce flag, aucun appel réseau, aucune clé d'API, nada.
+
+## Analyse IA (--ai)
+
+Le flag `--ai` déclenche l'analyse après les checks déterministes. Le state complet (services, ressources, logs, JVM, sécurité) est sérialisé et envoyé à un LLM avec un prompt d'admin système expert.
+
+```bash
+# Avec un LLM local (Ollama)
+nixcheck --fast --ai --model qwen3.5:0.8b --ai-base-url http://localhost:11434/v1 --ai-api-key dummy
+
+# Avec OpenAI
+nixcheck --fast --ai --model gpt-4o-mini --ai-base-url https://api.openai.com/v1 --ai-api-key sk-...
+
+# Mode JSON (le diagnostic IA est inclus dans la sortie)
+nixcheck --fast --ai --json --model gpt-4o-mini --ai-api-key sk-...
+```
+
+L'IA produit un rapport Markdown structuré :
+- **Overall Health** — synthèse en un paragraphe
+- **Findings** — liste des problèmes avec sévérité (CRITICAL → INFO)
+- **Recommendations** — actions concrètes, priorisées
+
+Installation de la dépendance IA :
+
+```bash
+pip install -e ".[ai]"
+```
+
+> Sans `--ai`, nixcheck ne charge jamais le client `openai` et n'a pas besoin de l'extra. Le package `openai` est une dépendance optionnelle (groupe `[ai]`).
 
 ## Ce que ça check
 
@@ -55,6 +84,9 @@ pip install -e .
 
 # Pour le dev (ruff, pytest)
 pip install -e ".[dev]"
+
+# Pour l'analyse IA
+pip install -e ".[ai]"
 ```
 
 **Prérequis** : Python 3.11+, Linux avec systemd. Docker/Podman optionnels.
@@ -79,6 +111,9 @@ nixcheck --hostname prod-server --log-lines 500 --threshold 90
 
 # Résumé minimal (une ligne)
 nixcheck --fast --quiet
+
+# Checks + diagnostic IA (LLM local via Ollama)
+nixcheck --fast --ai
 ```
 
 ### Codes de sortie
@@ -111,6 +146,8 @@ Le flag `--json` produit un dictionnaire structuré :
 }
 ```
 
+Avec `--ai --json`, un champ `ai_diagnosis` (rapport Markdown) est ajouté à ce dictionnaire ; en cas d'échec de l'appel LLM, un champ `ai_error` le remplace.
+
 Idéal pour du monitoring, du CI, ou pour nourrir un agent IA qui analysera les problèmes.
 
 ## Personnaliser la liste des miners
@@ -127,13 +164,14 @@ Formats supportés : YAML (`miners: [...]`), JSON, ou texte simple (un nom par l
 
 ```
 nixcheck/
-├── cli.py          # Point d'entrée CLI (argparse)
-├── graph.py        # Orchestration LangGraph — les noeuds et le workflow
-├── collectors.py   # Collecte brute : systemctl, journalctl, psutil, docker...
+├── cli.py           # Point d'entrée CLI (argparse)
+├── graph.py         # Orchestration LangGraph — les noeuds et le workflow
+├── collectors.py    # Collecte brute : systemctl, journalctl, psutil, docker...
 ├── models.py       # Modèles Pydantic (état, résultats, sévérité)
-├── reporter.py     # Rapport texte + résumé JSON
+├── reporter.py      # Rapport texte + résumé JSON
 ├── rich_reporter.py # Rapport Rich (tables colorées)
-└── miners.yaml     # Liste intégrée des noms de crypto-miners
+├── ai_analyzer.py   # Couche IA optionnelle (appel LLM OpenAI-compatible)
+└── miners.yaml      # Liste intégrée des noms de crypto-miners
 ```
 
 Le workflow LangGraph :
@@ -145,6 +183,8 @@ collect_services → collect_containers → collect_resources → collect_logs
 ```
 
 Chaque noeud est une fonction pure qui prend l'état enrichi et retourne ses résultats. Pas d'effets de bord cachés. C'est testable, debuggable, et extensible : ajoutez un noeud, branchez-le.
+
+L'analyse IA n'est **pas** un noeud du graphe : elle tourne après `report`, de façon strictement optionnelle, pour ne pas impacter le chemin déterministe.
 
 ## Développement
 
