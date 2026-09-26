@@ -93,7 +93,7 @@ Examples:
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="qwen3.5:0.8b",
+        default="gemma4:e2b",
         help="LLM model name for AI analysis (default: qwen3.5:0.8b, served locally via Ollama)"
     )
     parser.add_argument(
