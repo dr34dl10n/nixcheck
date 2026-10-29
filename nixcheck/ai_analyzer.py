@@ -48,6 +48,27 @@ A numbered list of concrete, prioritized actions. Each:
 """
 
 
+def _is_local_base_url(base_url: str) -> bool:
+    """True if the base URL points at localhost (no data leaves the machine)."""
+    from urllib.parse import urlparse
+
+    host = urlparse(base_url).hostname or ""
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _redact_details(details: dict[str, Any]) -> dict[str, Any]:
+    """Strip process command lines from security-issue details.
+
+    Cmdlines frequently embed credentials (JVM args, connection strings, tokens)
+    and are not needed for the diagnostic — the issue_type/description carry the
+    signal. File/crontab line excerpts are truncated already and kept.
+    """
+    cleaned = {k: v for k, v in details.items() if k != "cmdline"}
+    if "cmdline" in details:
+        cleaned["cmdline"] = "<redacted>"
+    return cleaned
+
+
 def _serialize_state(state: NixCheckState) -> dict[str, Any]:
     """Serialize the full NixCheckState for the LLM, trimming verbose fields."""
     data = state.model_dump(mode="json")
@@ -62,6 +83,17 @@ def _serialize_state(state: NixCheckState) -> dict[str, Any]:
             ),
         )
         data["log_errors"] = sorted_errors[:50]
+
+    # Redact payload: never ship raw log lines or process cmdlines to the LLM.
+    # raw_line can embed passwords/tokens; cmdline likewise (JVM args, connection
+    # strings). The structured fields (message, source, severity, description)
+    # are enough for a diagnosis.
+    for entry in data.get("log_errors") or []:
+        if isinstance(entry, dict) and entry.get("raw_line"):
+            entry["raw_line"] = "<redacted>"
+    for issue in data.get("security_issues") or []:
+        if isinstance(issue, dict) and isinstance(issue.get("details"), dict):
+            issue["details"] = _redact_details(issue["details"])
 
     return data
 
@@ -95,9 +127,17 @@ def analyze_with_ai(
             "Install with: pip install -e '.[ai]'"
         )
 
-    # Resolve connection params
-    base_url = base_url or os.environ.get("OPENAI_BASE_URL")
-    api_key = api_key or os.environ.get("OPENAI_API_KEY", "dummy-key-for-local")
+    # Resolve connection params: explicit arg > env var > local Ollama default.
+    # Defaults live here (not in argparse) so the env fallback actually works.
+    base_url = base_url or os.environ.get("OPENAI_BASE_URL") or "http://localhost:11434/v1"
+    api_key = api_key or os.environ.get("OPENAI_API_KEY") or "dummy-key-for-local"
+
+    if not _is_local_base_url(base_url):
+        logger.warning(
+            "AI analysis: the full check state (logs, process details) will be "
+            "sent to a remote endpoint: %s — make sure this is intentional.",
+            base_url,
+        )
 
     client = OpenAI(base_url=base_url, api_key=api_key)
 

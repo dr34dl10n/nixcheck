@@ -1,5 +1,6 @@
 """Tests for the AI analyzer module."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -164,6 +165,80 @@ class TestAnalyzeWithAI:
             base_url="http://localhost:11434/v1",
             api_key="test-key",
         )
+
+    def test_env_fallback_when_no_cli_args(self, healthy_state, monkeypatch):
+        """P2 fix: OPENAI_BASE_URL / OPENAI_API_KEY fallback must actually apply
+        even though argparse no longer provides truthy defaults."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://env-host:9999/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "env-secret")
+
+        with patch("openai.OpenAI") as mock_openai:
+            analyze_with_ai(healthy_state)
+
+        mock_openai.assert_called_once_with(
+            base_url="http://env-host:9999/v1",
+            api_key="env-secret",
+        )
+
+    def test_cli_arg_overrides_env(self, healthy_state, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://env-host:9999/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "env-secret")
+
+        with patch("openai.OpenAI") as mock_openai:
+            analyze_with_ai(healthy_state, base_url="http://cli:1/v1", api_key="cli-key")
+
+        mock_openai.assert_called_once_with(
+            base_url="http://cli:1/v1",
+            api_key="cli-key",
+        )
+
+    def test_defaults_to_local_ollama(self, healthy_state, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("openai.OpenAI") as mock_openai:
+            analyze_with_ai(healthy_state)
+
+        mock_openai.assert_called_once_with(
+            base_url="http://localhost:11434/v1",
+            api_key="dummy-key-for-local",
+        )
+
+    def test_redacts_cmdline_from_security_details(self, unhealthy_state):
+        """P2 fix: process cmdlines must not reach the LLM payload."""
+        unhealthy_state.security_issues[0].details = {
+            "pid": 5678,
+            "name": "xmrig",
+            "cmdline": ["xmrig", "--pass", "supersecret"],
+        }
+        payload = _serialize_state(unhealthy_state)
+        assert payload["security_issues"][0]["details"]["cmdline"] == "<redacted>"
+        assert "supersecret" not in json.dumps(payload)
+
+    def test_redacts_raw_log_lines(self, unhealthy_state):
+        """P2 fix: raw log lines must not reach the LLM payload."""
+        unhealthy_state.log_errors[0].raw_line = "password=hunter2 boot failure"
+        payload = _serialize_state(unhealthy_state)
+        assert payload["log_errors"][0]["raw_line"] == "<redacted>"
+        assert "hunter2" not in json.dumps(payload)
+
+    def test_warns_on_remote_base_url(self, unhealthy_state, caplog):
+        import logging
+
+        with patch("openai.OpenAI"):
+            with caplog.at_level(logging.WARNING, logger="nixcheck.ai_analyzer"):
+                analyze_with_ai(unhealthy_state, base_url="https://api.openai.com/v1")
+
+        assert "remote endpoint" in caplog.text
+
+    def test_no_warning_on_local_base_url(self, unhealthy_state, caplog):
+        import logging
+
+        with patch("openai.OpenAI"):
+            with caplog.at_level(logging.WARNING, logger="nixcheck.ai_analyzer"):
+                analyze_with_ai(unhealthy_state, base_url="http://localhost:11434/v1")
+
+        assert "remote endpoint" not in caplog.text
 
     def test_raises_on_empty_response(self, healthy_state):
         mock_response = MagicMock()

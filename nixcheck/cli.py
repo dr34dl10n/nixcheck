@@ -94,19 +94,19 @@ Examples:
         "--model", "-m",
         type=str,
         default="gemma4:e2b",
-        help="LLM model name for AI analysis (default: qwen3.5:0.8b, served locally via Ollama)"
+        help="LLM model name for AI analysis (default: gemma4:e2b, served locally via Ollama)"
     )
     parser.add_argument(
         "--ai-base-url",
         type=str,
-        default="http://localhost:11434/v1",
-        help="Override API base URL (default: local Ollama at http://localhost:11434/v1). Falls back to OPENAI_BASE_URL env if explicitly unset."
+        default=None,
+        help="Override API base URL (default: OPENAI_BASE_URL env, else local Ollama at http://localhost:11434/v1)."
     )
     parser.add_argument(
         "--ai-api-key",
         type=str,
-        default="dummy",
-        help="API key for AI analysis (default: 'dummy' for local Ollama). Falls back to OPENAI_API_KEY env."
+        default=None,
+        help="API key for AI analysis. Prefer the OPENAI_API_KEY env var over this flag (CLI args are visible in `ps aux`)."
     )
 
     args = parser.parse_args()

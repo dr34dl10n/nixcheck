@@ -26,15 +26,26 @@ Par-dessus ces checks déterministes, nixcheck propose une **couche d'analyse IA
 Le flag `--ai` déclenche l'analyse après les checks déterministes. Le state complet (services, ressources, logs, JVM, sécurité) est sérialisé et envoyé à un LLM avec un prompt d'admin système expert.
 
 ```bash
-# Avec un LLM local (Ollama)
-nixcheck --fast --ai --model qwen3.5:0.8b --ai-base-url http://localhost:11434/v1 --ai-api-key dummy
+# Avec un LLM local (Ollama) — aucune clé nécessaire
+nixcheck --fast --ai --model gemma4:e2b
 
-# Avec OpenAI
-nixcheck --fast --ai --model gpt-4o-mini --ai-base-url https://api.openai.com/v1 --ai-api-key sk-...
+# Avec OpenAI — exporter la clé en variable d'environnement (jamais en CLI :
+# un argument de commande est visible dans `ps aux` et l'historique shell)
+export OPENAI_API_KEY="sk-..."
+nixcheck --fast --ai --model gpt-4o-mini --ai-base-url https://api.openai.com/v1
 
 # Mode JSON (le diagnostic IA est inclus dans la sortie)
-nixcheck --fast --ai --json --model gpt-4o-mini --ai-api-key sk-...
+nixcheck --fast --ai --json --model gpt-4o-mini
 ```
+
+Priorité de résolution : argument CLI > variable d'environnement (`OPENAI_BASE_URL`,
+`OPENAI_API_KEY`) > défaut local (Ollama `http://localhost:11434/v1`, clé factice).
+
+⚠️ **Confidentialité** : avec `--ai`, le state (logs filtrés, détails des issues
+de sécurité) est envoyé au LLM. Vers un endpoint local (Ollama) rien ne quitte
+la machine ; vers un endpoint distant, un avertissement est logué. Les lignes
+de logs brutes (`raw_line`) et les lignes de commande des processus (`cmdline`)
+sont systématiquement rédacées avant l'envoi.
 
 L'IA produit un rapport Markdown structuré :
 - **Overall Health** — synthèse en un paragraphe
