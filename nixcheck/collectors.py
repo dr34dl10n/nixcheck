@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ __all__ = [
     "collect_var_log_errors",
     "detect_java_processes",
     "load_miner_names",
+    "miner_match",
     "run_cmd",
 ]
 
@@ -331,6 +333,35 @@ def analyze_jvm_config(proc_info: dict[str, Any]) -> JVMConfig | None:
     return jvm
 
 
+def miner_match(name: str, cmdline: list[str], miner_names: set[str]) -> str | None:
+    """Return the matched miner name for a process, or None.
+
+    Uses token-boundary matching instead of raw substring: a bare
+    ``miner_name in cmdline`` matches 't-rex' inside 'vector-rex.json' or
+    'xmr' inside 'xmrig-monitoring.png' and raises CRITICAL false positives.
+    A match counts when the miner name appears as its own token inside the
+    process name or inside any command-line argument (paths included:
+    './cpuminer -a sha256' matches 'cpuminer', 'my-t-rex-data' does not
+    match 't-rex').
+    """
+    def boundary_match(text: str) -> str | None:
+        text = text.lower()
+        for miner in miner_names:
+            escaped = re.escape(miner.lower())
+            if re.search(rf"(?<![\w.-]){escaped}(?![\w.-])", text):
+                return miner
+        return None
+
+    match = boundary_match(name)
+    if match:
+        return match
+    for arg in cmdline:
+        match = boundary_match(arg)
+        if match:
+            return match
+    return None
+
+
 def collect_security_issues(miner_names: set[str] | None = None, fast: bool = False) -> list[SecurityIssue]:
     """Collect security issues including crypto miners and suspicious processes."""
     if miner_names is None:
@@ -338,30 +369,37 @@ def collect_security_issues(miner_names: set[str] | None = None, fast: bool = Fa
     cpu_interval = None if fast else 0.1
     issues = []
 
+    if cpu_interval is None:
+        # Prime per-process CPU counters: with interval=None psutil returns 0.0
+        # on the first non-blocking call, making the high-CPU check a no-op in
+        # fast mode. Prime + short window gives a meaningful delta.
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                proc.cpu_percent(None)
+            except Exception:
+                continue
+        time.sleep(0.1)
+
     # Single pass: check for crypto miners + high CPU processes
     known_benign = {"python3", "python", "node", "java", "chrome", "firefox"}
     for proc in psutil.process_iter(["pid", "name", "cmdline", "cpu_percent"]):
         try:
             name = proc.info.get("name", "")
             cmdline = proc.info.get("cmdline") or []
-            cmdline_str = " ".join(cmdline).lower()
 
             # Check for crypto miners
-            is_miner = False
-            for miner_name in miner_names:
-                if miner_name in name.lower() or miner_name in cmdline_str:
-                    issues.append(SecurityIssue(
-                        issue_type="crypto_miner",
-                        severity=Severity.CRITICAL,
-                        description=f"Crypto miner detected: {name} (PID: {proc.info['pid']})",
-                        details={"pid": proc.info["pid"], "name": name, "cmdline": cmdline},
-                        remediation="Kill the process and investigate how it was installed. Check for unauthorized access.",
-                    ))
-                    is_miner = True
-                    break
+            matched_miner = miner_match(name, cmdline, miner_names)
+            if matched_miner:
+                issues.append(SecurityIssue(
+                    issue_type="crypto_miner",
+                    severity=Severity.CRITICAL,
+                    description=f"Crypto miner detected: {name} (PID: {proc.info['pid']})",
+                    details={"pid": proc.info["pid"], "name": name, "cmdline": cmdline},
+                    remediation="Kill the process and investigate how it was installed. Check for unauthorized access.",
+                ))
 
             # If not a miner, check for high CPU
-            if not is_miner:
+            if not matched_miner:
                 cpu = proc.cpu_percent(interval=cpu_interval)
                 if cpu > 80 and name.lower() not in miner_names and name not in known_benign:
                     issues.append(SecurityIssue(
@@ -382,11 +420,15 @@ def collect_security_issues(miner_names: set[str] | None = None, fast: bool = Fa
         "/etc/cron.d",
     ]
 
+    # (pattern, severity). A plain curl/wget download is routine in legit
+    # cron jobs (cert renewals, dyndns...) -> MEDIUM, so it surfaces in the
+    # report without triggering exit code 2. Actively dangerous constructs
+    # (pipe-to-shell, base64 decode, /dev/tcp reverse shell) stay HIGH/CRITICAL.
     suspicious_patterns = [
-        re.compile(r"(curl|wget)\s+.*\|\s*(bash|sh|python|perl)"),
-        re.compile(r"base64\s+-d"),
-        re.compile(r"(curl|wget)\s+.*https?://"),
-        re.compile(r"/dev/tcp/"),
+        (re.compile(r"(curl|wget)\s+.*\|\s*(bash|sh|python|perl)"), Severity.CRITICAL),
+        (re.compile(r"base64\s+-d"), Severity.HIGH),
+        (re.compile(r"(curl|wget)\s+.*https?://"), Severity.MEDIUM),
+        (re.compile(r"/dev/tcp/"), Severity.HIGH),
     ]
 
     for crontab_path in crontab_paths:
@@ -395,11 +437,11 @@ def collect_security_issues(miner_names: set[str] | None = None, fast: bool = Fa
             try:
                 content = path.read_text()
                 for line in content.split("\n"):
-                    for pattern in suspicious_patterns:
+                    for pattern, severity in suspicious_patterns:
                         if pattern.search(line):
                             issues.append(SecurityIssue(
                                 issue_type="suspicious_cron",
-                                severity=Severity.HIGH,
+                                severity=severity,
                                 description=f"Suspicious cron entry in {crontab_path}",
                                 details={"file": str(crontab_path), "line": line[:200]},
                                 remediation="Review and remove suspicious cron entries. Check for unauthorized access.",
@@ -423,11 +465,11 @@ def collect_security_issues(miner_names: set[str] | None = None, fast: bool = Fa
                     try:
                         content = file.read_text()
                         for line in content.split("\n"):
-                            for pattern in suspicious_patterns:
+                            for pattern, severity in suspicious_patterns:
                                 if pattern.search(line):
                                     issues.append(SecurityIssue(
                                         issue_type="suspicious_cron",
-                                        severity=Severity.HIGH,
+                                        severity=severity,
                                         description=f"Suspicious cron entry in {file}",
                                         details={"file": str(file), "line": line[:200]},
                                         remediation="Review and remove suspicious cron entries. Check for unauthorized access.",

@@ -184,12 +184,11 @@ Examples:
         if args.json:
             print(json.dumps(summary, indent=2))
         
-        # Exit with error code if critical issues found
-        critical_errors = len([e for e in state.log_errors if e.severity.value in ("critical", "high")])
-        security_critical = len([s for s in state.security_issues if s.severity.value in ("critical", "high")])
-        
-        if critical_errors > 0 or security_critical > 0:
-            sys.exit(2)
+        # Exit with error code if critical issues found (logic in reporter)
+        from .reporter import compute_exit_code
+        exit_code = compute_exit_code(state)
+        if exit_code != 0:
+            sys.exit(exit_code)
         
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user[/]")

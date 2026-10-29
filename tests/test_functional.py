@@ -16,6 +16,7 @@ from nixcheck.collectors import (
     detect_java_processes,
     analyze_jvm_config,
     collect_security_issues,
+    miner_match,
     run_cmd,
 )
 from nixcheck.graph import build_graph, run_nixcheck, should_analyze_jvm
@@ -566,7 +567,8 @@ class TestSecurityIssues:
         issues = collect_security_issues()
         cron_issues = [i for i in issues if i.issue_type == "suspicious_cron"]
         assert len(cron_issues) >= 1
-        assert cron_issues[0].severity == Severity.HIGH
+        # curl | bash -> CRITICAL (pipe-to-shell)
+        assert cron_issues[0].severity == Severity.CRITICAL
 
     @patch("pathlib.Path.exists")
     @patch("pathlib.Path.read_text")
@@ -579,11 +581,74 @@ class TestSecurityIssues:
         issues = collect_security_issues()
         cron_issues = [i for i in issues if i.issue_type == "suspicious_cron"]
         assert len(cron_issues) >= 1
+        assert cron_issues[0].severity == Severity.HIGH
+
+    @patch("pathlib.Path.exists")
+    @patch("pathlib.Path.read_text")
+    @patch("psutil.process_iter")
+    def test_curl_download_cron_is_medium(self, mock_process_iter, mock_read_text, mock_exists):
+        """P3 fix: a plain curl/wget download in cron is legit too often to
+        warrant HIGH + exit code 2 — downgraded to MEDIUM."""
+        mock_process_iter.return_value = []
+        mock_exists.return_value = True
+        mock_read_text.return_value = "*/10 * * * * root curl -s https://example.org/ping > /dev/null\n"
+
+        issues = collect_security_issues()
+        cron_issues = [i for i in issues if i.issue_type == "suspicious_cron"]
+        assert len(cron_issues) >= 1
+        assert cron_issues[0].severity == Severity.MEDIUM
 
 
 # ──────────────────────────────────────────────
 #  reporter
 # ──────────────────────────────────────────────
+
+class TestMinerMatch:
+    """P3 fix: token-boundary miner matching (no substring false positives)."""
+
+    def test_exact_process_name(self):
+        assert miner_match("xmrig", [], {"xmrig"}) == "xmrig"
+
+    def test_basename_in_cmdline(self):
+        assert miner_match("bash", ["bash", "-c", "./cpuminer -a sha256"], {"cpuminer"}) == "cpuminer"
+
+    def test_path_argument(self):
+        assert miner_match("sh", ["sh", "-c", "/tmp/.hidden/xmrig --donate 1"], {"xmrig"}) == "xmrig"
+
+    def test_no_substring_false_positive(self):
+        # 't-rex' inside a larger token must NOT match
+        assert miner_match("normal", ["app", "--output", "vector-rex-data.json"], {"t-rex"}) is None
+        assert miner_match("my-t-rex-app", [], {"t-rex"}) is None
+
+    def test_no_match_on_unrelated(self):
+        assert miner_match("python3", ["python3", "script.py"], {"xmrig", "cpuminer"}) is None
+
+    @patch("psutil.process_iter")
+    def test_false_positive_not_flagged_end_to_end(self, mock_process_iter):
+        proc = MagicMock()
+        proc.info = {"pid": 1, "name": "curl", "cmdline": ["curl", "-s", "https://cdn.example.com/t-rex-assets.json"], "cpu_percent": 1.0}
+        proc.cpu_percent.return_value = 1.0
+        mock_process_iter.return_value = [proc]
+
+        with patch("pathlib.Path.exists", return_value=False):
+            issues = collect_security_issues(miner_names={"t-rex"})
+
+        assert [i for i in issues if i.issue_type == "crypto_miner"] == []
+
+    @patch("psutil.process_iter")
+    def test_high_cpu_works_in_fast_mode(self, mock_process_iter):
+        """P3 fix: priming cpu_percent so interval=None doesn't return 0.0."""
+        proc = MagicMock()
+        proc.info = {"pid": 2, "name": "compile-thing", "cmdline": ["compile-thing"], "cpu_percent": 95.0}
+        proc.cpu_percent.return_value = 95.0
+        mock_process_iter.return_value = [proc]
+
+        with patch("pathlib.Path.exists", return_value=False):
+            issues = collect_security_issues(fast=True)
+
+        high_cpu = [i for i in issues if i.issue_type == "high_cpu_process"]
+        assert len(high_cpu) >= 1
+
 
 class TestReporter:
     """Tests for report generation."""

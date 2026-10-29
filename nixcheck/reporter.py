@@ -210,6 +210,14 @@ def generate_report(state: NixCheckState) -> str:
     return "\n".join(lines)
 
 
+def compute_exit_code(state: NixCheckState) -> int:
+    """Exit code: 0 = healthy, 2 = problems detected (critical/high log errors
+    or security issues). Single source of truth — used by the CLI."""
+    critical_errors = len([e for e in state.log_errors if e.severity.value in ("critical", "high")])
+    security_high = len([s for s in state.security_issues if s.severity.value in ("critical", "high")])
+    return 2 if (critical_errors > 0 or security_high > 0) else 0
+
+
 def generate_json_summary(state: NixCheckState) -> dict[str, Any]:
     """Generate a JSON-serializable summary."""
     return {
