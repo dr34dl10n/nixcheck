@@ -27,7 +27,7 @@ Le flag `--ai` déclenche l'analyse après les checks déterministes. Le state c
 
 ```bash
 # Avec un LLM local (Ollama) — aucune clé nécessaire
-nixcheck --fast --ai --model gemma4:31b-cloud
+nixcheck --fast --ai --model glm-5.3-flash:cloud
 
 # Avec OpenAI — exporter la clé en variable d'environnement (jamais en CLI :
 # un argument de commande est visible dans `ps aux` et l'historique shell)

@@ -93,8 +93,8 @@ Examples:
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="gemma4:31b-cloud",
-        help="LLM model name for AI analysis (default: gemma4:31b-cloud, served via Ollama Cloud)"
+        default="glm-5.3-flash:cloud",
+        help="LLM model name for AI analysis (default: glm-5.3-flash:cloud, flash tier = lowest cost via Ollama Cloud)"
     )
     parser.add_argument(
         "--ai-base-url",
